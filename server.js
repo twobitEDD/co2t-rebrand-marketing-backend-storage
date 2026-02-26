@@ -4,20 +4,38 @@ import cors from 'cors'
 import multer from 'multer'
 import path from 'path'
 import fs from 'fs'
+import os from 'os'
 import { fileURLToPath } from 'url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const UPLOAD_DIR = path.join(__dirname, 'uploads')
+// Use /tmp on Railway/Vercel—ephemeral deploys often have read-only app dirs
+const UPLOAD_DIR = process.env.RAILWAY_ENVIRONMENT || process.env.VERCEL
+  ? path.join(os.tmpdir(), 'co2t-uploads')
+  : path.join(__dirname, 'uploads')
 const STORAGE_SECRET = process.env.STORAGE_SECRET || 'dev-storage-secret'
 
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true })
+// Verify writable at startup
+try {
+  const test = path.join(UPLOAD_DIR, '.write-check')
+  fs.writeFileSync(test, 'ok')
+  fs.unlinkSync(test)
+} catch (e) {
+  console.error('[startup] UPLOAD_DIR not writable:', UPLOAD_DIR, e.message)
+}
 
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, UPLOAD_DIR),
+  destination: (req, file, cb) => {
+    try {
+      if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true })
+      cb(null, UPLOAD_DIR)
+    } catch (e) {
+      cb(e)
+    }
+  },
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname) || '.png'
-    const name = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}${ext}`
-    cb(null, name)
+    cb(null, `${Date.now()}-${Math.random().toString(36).slice(2, 9)}${ext}`)
   },
 })
 const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 } }) // 10MB
@@ -50,7 +68,8 @@ app.post('/upload', checkSecret, (req, res, next) => {
       if (err.code === 'LIMIT_FILE_SIZE') {
         return res.status(400).json({ error: 'File too large (max 10MB)' })
       }
-      return res.status(400).json({ error: err.message || 'Upload error' })
+      console.error('[upload] multer error:', err.code, err.message)
+      return res.status(500).json({ error: err.message || 'Storage write failed' })
     }
     next()
   })
