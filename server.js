@@ -44,17 +44,37 @@ function filesBaseUrl() {
 
 app.get('/', (req, res) => res.status(200).json({ ok: true, service: 'co2t-storage' }))
 
-app.post('/upload', checkSecret, upload.single('file'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file' })
-  const baseUrl = filesBaseUrl()
-  const url = `${baseUrl}/${req.file.filename}`
-  res.json({ url, filename: req.file.filename })
+app.post('/upload', checkSecret, (req, res, next) => {
+  upload.single('file')(req, res, (err) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({ error: 'File too large (max 10MB)' })
+      }
+      return res.status(400).json({ error: err.message || 'Upload error' })
+    }
+    next()
+  })
+}, (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file' })
+    const baseUrl = filesBaseUrl()
+    const url = `${baseUrl}/${req.file.filename}`
+    res.json({ url, filename: req.file.filename })
+  } catch (e) {
+    console.error('[upload]', e.message)
+    res.status(500).json({ error: e.message || 'Storage upload failed' })
+  }
 })
 
 app.get('/files/:filename', (req, res) => {
   const file = path.join(UPLOAD_DIR, req.params.filename)
   if (!fs.existsSync(file)) return res.status(404).send('Not found')
   res.sendFile(file)
+})
+
+app.use((err, req, res, next) => {
+  console.error('[error]', err?.message || err)
+  res.status(err.status || 500).json({ error: err.message || 'Internal Server Error' })
 })
 
 app.listen(PORT, () => console.log(`Storage listening on ${PORT}`))
